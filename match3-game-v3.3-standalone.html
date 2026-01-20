@@ -1,0 +1,2334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Match-3 Game v3.3</title>
+    
+    <!-- Load React from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Load Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        #root {
+            min-height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+
+// Game Configuration
+const ROWS = 12;
+const COLS = 10;
+const TILE_SIZE = 36; // Reduced from 40px for better spacing
+const TILE_GAP = 8; // Increased from 3px for more breathing room
+const TILE_TYPES = 6;
+const MIN_MOVES = 18; // Reduced for harder difficulty
+const MAX_MOVES = 24; // Reduced for harder difficulty
+const BASE_TARGET = 5000; // Base target score
+const TARGET_VARIANCE = 1500; // Random variance (5000-6500)
+const WIN_BONUS_PER_MOVE = 100; // Bonus points per remaining move
+const DIFFICULTY_INCREMENT_MIN = 50; // Min target increase per win
+const DIFFICULTY_INCREMENT_MAX = 400; // Max target increase per win
+
+// Tile configurations with actual CSS shapes
+const TILE_CONFIG = [
+  { 
+    color: '#FF4444', 
+    shape: '●', 
+    name: 'circle',
+    shapeStyle: { borderRadius: '50%' }
+  },
+  { 
+    color: '#4444FF', 
+    shape: '■', 
+    name: 'square',
+    shapeStyle: { borderRadius: '8px' }
+  },
+  { 
+    color: '#44FF44', 
+    shape: '▲', 
+    name: 'triangle',
+    shapeStyle: { clipPath: 'polygon(50% 0%, 0% 100%, 100% 100%)' }
+  },
+  { 
+    color: '#FFD700', 
+    shape: '★', 
+    name: 'star',
+    shapeStyle: { 
+      clipPath: 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)'
+      // background removed - applied in tile rendering instead
+    }
+  },
+  { 
+    color: '#9370DB', 
+    shape: '⬡', 
+    name: 'hexagon',
+    shapeStyle: { 
+      clipPath: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)'
+    }
+  },
+  { 
+    color: '#FF8C00', 
+    shape: '◆', 
+    name: 'diamond',
+    shapeStyle: { 
+      clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)'
+    }
+  }
+];
+
+// Initialize grid
+const initializeGrid = () => {
+  const grid = [];
+  for (let row = 0; row < ROWS; row++) {
+    grid[row] = [];
+    for (let col = 0; col < COLS; col++) {
+      let type;
+      let attempts = 0;
+      do {
+        type = Math.floor(Math.random() * TILE_TYPES);
+        attempts++;
+        if (attempts > 50) break;
+      } while (
+        (col >= 2 && grid[row][col - 1]?.type === type && grid[row][col - 2]?.type === type) ||
+        (row >= 2 && grid[row - 1]?.[col]?.type === type && grid[row - 2]?.[col]?.type === type)
+      );
+      
+      grid[row][col] = {
+        type,
+        id: `${row}-${col}-${Date.now()}-${Math.random()}`,
+        special: null,
+        isNew: false
+      };
+    }
+  }
+  return grid;
+};
+
+// Find matches with L-shape detection
+const findMatches = (grid) => {
+  const matches = [];
+  const matchGroups = [];
+  const lShapeMatches = [];
+  
+  // First, find all horizontal matches
+  const horizontalMatches = [];
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS - 2; col++) {
+      const type = grid[row][col]?.type;
+      if (type === undefined) continue;
+      let matchLength = 1;
+      
+      for (let k = col + 1; k < COLS && grid[row][k]?.type === type; k++) {
+        matchLength++;
+      }
+      
+      if (matchLength >= 3) {
+        horizontalMatches.push({ row, startCol: col, endCol: col + matchLength - 1, type });
+        col += matchLength - 1;
+      }
+    }
+  }
+  
+  // Find all vertical matches
+  const verticalMatches = [];
+  for (let col = 0; col < COLS; col++) {
+    for (let row = 0; row < ROWS - 2; row++) {
+      const type = grid[row][col]?.type;
+      if (type === undefined) continue;
+      let matchLength = 1;
+      
+      for (let k = row + 1; k < ROWS && grid[k][col]?.type === type; k++) {
+        matchLength++;
+      }
+      
+      if (matchLength >= 3) {
+        verticalMatches.push({ col, startRow: row, endRow: row + matchLength - 1, type });
+        row += matchLength - 1;
+      }
+    }
+  }
+  
+  // Check for L-shapes (horizontal and vertical match intersecting)
+  for (const h of horizontalMatches) {
+    for (const v of verticalMatches) {
+      if (h.type === v.type) {
+        // Check if they intersect
+        if (v.col >= h.startCol && v.col <= h.endCol && 
+            h.row >= v.startRow && h.row <= v.endRow) {
+          const intersectRow = h.row;
+          const intersectCol = v.col;
+          const totalTiles = (h.endCol - h.startCol + 1) + (v.endRow - v.startRow + 1) - 1; // -1 for intersection
+          
+          if (totalTiles >= 5) {
+            lShapeMatches.push({
+              row: intersectRow,
+              col: intersectCol,
+              type: 'lshape',
+              tileType: h.type, // Store the tile color (0-5)
+              totalTiles: totalTiles
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  // Convert horizontal matches to match format
+  horizontalMatches.forEach(hm => {
+    const group = [];
+    const matchLength = hm.endCol - hm.startCol + 1;
+    for (let c = hm.startCol; c <= hm.endCol; c++) {
+      const match = { row: hm.row, col: c, length: matchLength, direction: 'horizontal' };
+      matches.push(match);
+      group.push(match);
+    }
+    matchGroups.push({ tiles: group, length: matchLength, direction: 'horizontal', startRow: hm.row, startCol: hm.startCol });
+  });
+  
+  // Convert vertical matches to match format
+  verticalMatches.forEach(vm => {
+    const group = [];
+    const matchLength = vm.endRow - vm.startRow + 1;
+    for (let r = vm.startRow; r <= vm.endRow; r++) {
+      const match = { row: r, col: vm.col, length: matchLength, direction: 'vertical' };
+      matches.push(match);
+      group.push(match);
+    }
+    matchGroups.push({ tiles: group, length: matchLength, direction: 'vertical', startRow: vm.startRow, startCol: vm.col });
+  });
+  
+  return { matches, matchGroups, lShapeMatches };
+};
+
+const getUniqueMatches = (matches) => {
+  const uniqueSet = new Set();
+  return matches.filter(match => {
+    const key = `${match.row}-${match.col}`;
+    if (uniqueSet.has(key)) return false;
+    uniqueSet.add(key);
+    return true;
+  });
+};
+
+// Check for valid moves
+const hasValidMoves = (grid) => {
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS - 1; col++) {
+      const testGrid = grid.map(r => r.map(t => ({ ...t })));
+      const temp = testGrid[row][col];
+      testGrid[row][col] = testGrid[row][col + 1];
+      testGrid[row][col + 1] = temp;
+      if (findMatches(testGrid).matches.length > 0) return true;
+    }
+  }
+  
+  for (let row = 0; row < ROWS - 1; row++) {
+    for (let col = 0; col < COLS; col++) {
+      const testGrid = grid.map(r => r.map(t => ({ ...t })));
+      const temp = testGrid[row][col];
+      testGrid[row][col] = testGrid[row + 1][col];
+      testGrid[row + 1][col] = temp;
+      if (findMatches(testGrid).matches.length > 0) return true;
+    }
+  }
+  
+  return false;
+};
+
+// Main Component
+const Match3Game = () => {
+  const [grid, setGrid] = useState(initializeGrid());
+  const [selectedTile, setSelectedTile] = useState(null);
+  const [score, setScore] = useState(0);
+  const [moves, setMoves] = useState(() => MIN_MOVES + Math.floor(Math.random() * (MAX_MOVES - MIN_MOVES + 1)));
+  const [gameState, setGameState] = useState('playing');
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [lastSwapTime, setLastSwapTime] = useState(0); // For debouncing rapid inputs
+  const [levelTarget, setLevelTarget] = useState(() => {
+    const rawTarget = BASE_TARGET + Math.floor(Math.random() * TARGET_VARIANCE);
+    return Math.round(rawTarget / 100) * 100; // Round to nearest 100
+  });
+  const [difficultyBonus, setDifficultyBonus] = useState(0); // Tracks progressive difficulty
+  const [highScore, setHighScore] = useState(0);
+  const [matchedTiles, setMatchedTiles] = useState([]);
+  const [scorePopups, setScorePopups] = useState([]);
+  const [particles, setParticles] = useState([]); // Particle effects
+  const [isMobile, setIsMobile] = useState(false); // Detect mobile device
+  const [performanceMode, setPerformanceMode] = useState('auto'); // auto, low, high
+  const [combo, setCombo] = useState(0);
+  const [lastCombo, setLastCombo] = useState(0); // Keep showing combo until next move
+  const [specialsThisTurn, setSpecialsThisTurn] = useState(0); // Track specials triggered for bonus
+  const [specialBonusMultiplier, setSpecialBonusMultiplier] = useState(0); // Bonus from specials
+  const [maxComboReached, setMaxComboReached] = useState(0); // Track highest combo
+  const [showingSummary, setShowingSummary] = useState(false); // End-game 4s pause
+  const [summaryCountdown, setSummaryCountdown] = useState(8); // Countdown value (8 seconds)
+  const [showNoMoves, setShowNoMoves] = useState(false);
+  const [dragStart, setDragStart] = useState(null);
+
+  // Mobile detection and performance auto-adjustment
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+        || window.innerWidth < 768;
+      setIsMobile(mobile);
+      
+      // Auto-set performance mode
+      if (performanceMode === 'auto') {
+        // Tablet/mobile: reduce particles and effects
+        if (mobile) {
+          console.log('Mobile detected: Using performance mode');
+        }
+      }
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, [performanceMode]);
+
+  // Particle system - create particles for special effects
+  const createParticles = (row, col, type, count = 20) => {
+    const isLowPerf = isMobile || performanceMode === 'low';
+    const particleCount = isLowPerf ? Math.floor(count / 2) : count; // Half particles on mobile
+    
+    const x = col * (TILE_SIZE + TILE_GAP) + TILE_SIZE / 2;
+    const y = row * (TILE_SIZE + TILE_GAP) + TILE_SIZE / 2;
+    
+    const newParticles = [];
+    
+    for (let i = 0; i < particleCount; i++) {
+      let particle;
+      
+      switch(type) {
+        case 'line': // Lightning horizontal
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x,
+            y: y + (Math.random() - 0.5) * 20,
+            vx: (Math.random() > 0.5 ? 1 : -1) * (3 + Math.random() * 4),
+            vy: (Math.random() - 0.5) * 2,
+            size: 2 + Math.random() * 3,
+            color: `rgba(255, 255, ${Math.floor(100 + Math.random() * 155)}, 1)`,
+            life: 0.6,
+            decay: 0.015
+          };
+          break;
+          
+        case 'bomb': // Explosion outward
+          const angle = (Math.PI * 2 * i) / particleCount;
+          const speed = 2 + Math.random() * 4;
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            size: 3 + Math.random() * 4,
+            color: `rgba(${255 - Math.floor(Math.random() * 100)}, ${Math.floor(Math.random() * 100)}, 0, 1)`,
+            life: 0.8,
+            decay: 0.012
+          };
+          break;
+          
+        case 'cross': // Star burst in + pattern
+          const isCross = i % 4;
+          const crossAngle = (Math.PI / 2) * isCross + (Math.random() - 0.5) * 0.3;
+          const crossSpeed = 2 + Math.random() * 3;
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x,
+            y: y,
+            vx: Math.cos(crossAngle) * crossSpeed,
+            vy: Math.sin(crossAngle) * crossSpeed,
+            size: 2 + Math.random() * 3,
+            color: `rgba(${200 + Math.floor(Math.random() * 55)}, ${100 + Math.floor(Math.random() * 155)}, 255, 1)`,
+            life: 0.7,
+            decay: 0.013
+          };
+          break;
+          
+        case 'supernova': // Cosmic wave
+          const waveAngle = (Math.PI * 2 * i) / particleCount;
+          const waveSpeed = 3 + Math.random() * 5;
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x,
+            y: y,
+            vx: Math.cos(waveAngle) * waveSpeed,
+            vy: Math.sin(waveAngle) * waveSpeed,
+            size: 3 + Math.random() * 5,
+            color: `rgba(${100 + Math.floor(Math.random() * 100)}, ${100 + Math.floor(Math.random() * 100)}, 255, 1)`,
+            life: 1.0,
+            decay: 0.010
+          };
+          break;
+          
+        case 'hypernova': // Epic screen-wide effect
+          particle = {
+            id: Date.now() + Math.random(),
+            x: Math.random() * (COLS * (TILE_SIZE + TILE_GAP)),
+            y: -20,
+            vx: (Math.random() - 0.5) * 2,
+            vy: 2 + Math.random() * 4,
+            size: 4 + Math.random() * 6,
+            color: `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 1)`,
+            life: 1.2,
+            decay: 0.008
+          };
+          break;
+          
+        case 'column': // Vertical streams
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x + (Math.random() - 0.5) * 30,
+            y: 0,
+            vx: (Math.random() - 0.5) * 1,
+            vy: 3 + Math.random() * 5,
+            size: 2 + Math.random() * 4,
+            color: `rgba(${150 + Math.floor(Math.random() * 105)}, ${150 + Math.floor(Math.random() * 105)}, 255, 1)`,
+            life: 0.9,
+            decay: 0.011
+          };
+          break;
+          
+        default:
+          particle = {
+            id: Date.now() + Math.random(),
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 4,
+            vy: (Math.random() - 0.5) * 4,
+            size: 2 + Math.random() * 3,
+            color: `rgba(255, 255, 255, 1)`,
+            life: 0.5,
+            decay: 0.02
+          };
+      }
+      
+      newParticles.push(particle);
+    }
+    
+    setParticles(prev => [...prev, ...newParticles]);
+  };
+
+  // Animate particles
+  useEffect(() => {
+    if (particles.length === 0) return;
+    
+    const animate = () => {
+      setParticles(prev => {
+        return prev
+          .map(p => ({
+            ...p,
+            x: p.x + p.vx,
+            y: p.y + p.vy,
+            vy: p.vy + 0.1, // Gravity
+            life: p.life - p.decay
+          }))
+          .filter(p => p.life > 0);
+      });
+    };
+    
+    const interval = setInterval(animate, 16); // ~60fps
+    return () => clearInterval(interval);
+  }, [particles.length > 0]);
+
+  // Handle touch/drag start
+  const handleDragStart = (e, row, col) => {
+    if (isAnimating || gameState !== 'playing' || !grid[row][col]) return;
+    
+    const touch = e.touches ? e.touches[0] : e;
+    setDragStart({
+      row,
+      col,
+      startX: touch.clientX,
+      startY: touch.clientY
+    });
+  };
+
+  // Handle touch/drag move - improved for mobile
+  const handleDragMove = (e) => {
+    if (!dragStart) return;
+    e.preventDefault(); // Prevent scrolling while swiping
+    
+    // Optional: Show swipe direction preview (performance consideration)
+    if (!isMobile || performanceMode !== 'low') {
+      const touch = e.touches ? e.touches[0] : e;
+      const deltaX = touch.clientX - dragStart.startX;
+      const deltaY = touch.clientY - dragStart.startY;
+      
+      // Could add visual feedback here showing swipe direction
+      // For now, just prevent default to stop scrolling
+    }
+  };
+
+  // Handle touch/drag end - improved swipe detection
+  const handleDragEnd = (e) => {
+    if (!dragStart) return;
+    
+    const touch = e.changedTouches ? e.changedTouches[0] : e;
+    const deltaX = touch.clientX - dragStart.startX;
+    const deltaY = touch.clientY - dragStart.startY;
+    
+    // Adjust swipe threshold for mobile (smaller on mobile for easier swipes)
+    const minSwipeDistance = isMobile ? 20 : 30;
+    
+    // Require stronger directional bias to prevent diagonal swipes
+    const directionalBias = 1.5; // Must be 1.5x stronger in one direction
+    
+    if (Math.abs(deltaX) > minSwipeDistance || Math.abs(deltaY) > minSwipeDistance) {
+      let targetRow = dragStart.row;
+      let targetCol = dragStart.col;
+      
+      // Only allow swipe in dominant direction (prevents diagonal swipes)
+      if (Math.abs(deltaX) > Math.abs(deltaY) * directionalBias) {
+        // Horizontal swipe only
+        targetCol = deltaX > 0 ? dragStart.col + 1 : dragStart.col - 1;
+      } else if (Math.abs(deltaY) > Math.abs(deltaX) * directionalBias) {
+        // Vertical swipe only
+        targetRow = deltaY > 0 ? dragStart.row + 1 : dragStart.row - 1;
+      }
+      // Else: diagonal movement - ignore
+      
+      if (targetRow >= 0 && targetRow < ROWS && targetCol >= 0 && targetCol < COLS &&
+          (targetRow !== dragStart.row || targetCol !== dragStart.col)) {
+        attemptSwap(dragStart.row, dragStart.col, targetRow, targetCol);
+      }
+    }
+    
+    setDragStart(null);
+  };
+
+  const handleTileClick = useCallback((row, col) => {
+    if (isAnimating || gameState !== 'playing' || !grid[row][col]) return;
+
+    const clickedTile = grid[row][col];
+    
+    // If clicking a special tile, activate it directly
+    if (clickedTile.special) {
+      console.log('Special tile clicked:', clickedTile.special);
+      setIsAnimating(true);
+      setMoves(prev => prev - 1);
+      
+      const tilesToRemove = [];
+      let points = 0;
+      let message = '';
+      
+      if (clickedTile.special === 'line') {
+        // Clear entire row
+        for (let c = 0; c < COLS; c++) {
+          if (grid[row][c]) tilesToRemove.push({ row, col: c });
+        }
+        points = tilesToRemove.length * 30; // Was 20, now 30 (1.5x)
+        message = `⚡ LINE CLEAR! +${points}`;
+        createParticles(row, col, 'line', 30); // Add particles!
+      } else if (clickedTile.special === 'bomb') {
+        // Clear 3x3
+        for (let r = Math.max(0, row - 1); r <= Math.min(ROWS - 1, row + 1); r++) {
+          for (let c = Math.max(0, col - 1); c <= Math.min(COLS - 1, col + 1); c++) {
+            if (grid[r][c]) tilesToRemove.push({ row: r, col: c });
+          }
+        }
+        points = tilesToRemove.length * 45; // Was 30, now 45 (1.5x)
+        message = `💣 BOOM! +${points}`;
+        createParticles(row, col, 'bomb', 40); // Add particles!
+      } else if (clickedTile.special === 'cross') {
+        // Clear entire row AND column
+        for (let c = 0; c < COLS; c++) {
+          if (grid[row][c]) tilesToRemove.push({ row, col: c });
+        }
+        for (let r = 0; r < ROWS; r++) {
+          if (grid[r][col] && r !== row) tilesToRemove.push({ row: r, col });
+        }
+        points = tilesToRemove.length * 38; // Was 25, now 38 (1.5x, rounded)
+        message = `✨ CROSS BLAST! +${points}`;
+        createParticles(row, col, 'cross', 25); // Reduced from 35 to help with lag
+      }
+      
+      addScorePopup(row, col, points, message, 1000); // 2x longer for special tiles
+      setScore(prev => prev + points);
+      setMatchedTiles(tilesToRemove);
+      
+      setTimeout(() => {
+        const newGrid = grid.map(r => r.map(t => ({ ...t })));
+        tilesToRemove.forEach(({ row, col }) => { newGrid[row][col] = null; });
+        setGrid(newGrid);
+        setMatchedTiles([]);
+        setTimeout(() => applyGravity(newGrid), 600);
+      }, 500);
+      
+      return;
+    }
+
+    if (!selectedTile) {
+      setSelectedTile({ row, col });
+      return;
+    }
+
+    if (selectedTile.row === row && selectedTile.col === col) {
+      setSelectedTile(null);
+      return;
+    }
+
+    const rowDiff = Math.abs(selectedTile.row - row);
+    const colDiff = Math.abs(selectedTile.col - col);
+    const isAdjacent = (rowDiff === 1 && colDiff === 0) || (rowDiff === 0 && colDiff === 1);
+
+    if (isAdjacent) {
+      attemptSwap(selectedTile.row, selectedTile.col, row, col);
+      setSelectedTile(null);
+    } else {
+      setSelectedTile({ row, col });
+    }
+  }, [isAnimating, gameState, grid, selectedTile]);
+
+  const activateSpecialTile = (row, col, currentGrid = null) => {
+    const gridToUse = currentGrid || grid;
+    const tile = gridToUse[row][col];
+    
+    if (!tile || !tile.special) {
+      console.log('No special tile found at', row, col, tile);
+      setIsAnimating(false);
+      return;
+    }
+
+    console.log('Activating special tile:', tile.special, 'at', row, col);
+    setIsAnimating(true);
+
+    const tilesToRemove = [];
+    let points = 0;
+    let message = '';
+
+    if (tile.special === 'line') {
+      // Clear entire row
+      for (let c = 0; c < COLS; c++) {
+        if (gridToUse[row][c]) tilesToRemove.push({ row, col: c });
+      }
+      points = tilesToRemove.length * 30; // Was 20, now 30 (1.5x)
+      message = `⚡ LINE CLEAR! +${points}`;
+      console.log('Line clear removing', tilesToRemove.length, 'tiles');
+    } else if (tile.special === 'bomb') {
+      // Clear 3x3 area
+      for (let r = Math.max(0, row - 1); r <= Math.min(ROWS - 1, row + 1); r++) {
+        for (let c = Math.max(0, col - 1); c <= Math.min(COLS - 1, col + 1); c++) {
+          if (gridToUse[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = tilesToRemove.length * 45; // Was 30, now 45 (1.5x)
+      message = `💣 BOOM! +${points}`;
+      console.log('Bomb removing', tilesToRemove.length, 'tiles');
+    } else if (tile.special === 'cross') {
+      // Clear entire row AND column
+      for (let c = 0; c < COLS; c++) {
+        if (gridToUse[row][c]) tilesToRemove.push({ row, col: c });
+      }
+      for (let r = 0; r < ROWS; r++) {
+        if (gridToUse[r][col] && r !== row) tilesToRemove.push({ row: r, col });
+      }
+      points = tilesToRemove.length * 38; // Was 25, now 38 (1.5x, rounded)
+      message = `✨ CROSS BLAST! +${points}`;
+      console.log('Cross clearing', tilesToRemove.length, 'tiles');
+    } else if (tile.special === 'supernova') {
+      // 🌌 SUPERNOVA: Clear 5×5, convert surrounding to specials, auto-trigger
+      console.log('SUPERNOVA activated!');
+      
+      // Phase 1: Clear 5×5 area
+      for (let r = Math.max(0, row - 2); r <= Math.min(ROWS - 1, row + 2); r++) {
+        for (let c = Math.max(0, col - 2); c <= Math.min(COLS - 1, col + 2); c++) {
+          if (gridToUse[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 1500;
+      message = `🌌 SUPERNOVA! +${points}`;
+      createParticles(row, col, 'supernova', 60); // Epic particles!
+      
+      // Phase 2: Identify surrounding tiles (outside 5×5, inside 7×7)
+      const tilesToConvert = [];
+      for (let r = Math.max(0, row - 3); r <= Math.min(ROWS - 1, row + 3); r++) {
+        for (let c = Math.max(0, col - 3); c <= Math.min(COLS - 1, col + 3); c++) {
+          // If outside 5×5 area but within 7×7
+          const isOutside5x5 = (r < row - 2 || r > row + 2 || c < col - 2 || c > col + 2);
+          if (isOutside5x5 && gridToUse[r][c] && !tilesToRemove.some(t => t.row === r && t.col === c)) {
+            tilesToConvert.push({ row: r, col: c });
+          }
+        }
+      }
+      
+      // Store conversion info for Phase 3
+      tile._supernovaConvert = tilesToConvert.slice(0, 8); // Max 8 tiles
+      
+    } else if (tile.special === 'hypernova') {
+      // 🌠 HYPERNOVA: Clear ENTIRE board, award massive points
+      console.log('HYPERNOVA activated!');
+      
+      // Clear entire board
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (gridToUse[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      
+      points = 5000;
+      message = `🌠 HYPERNOVA!!! +${points}`;
+      createParticles(row, col, 'hypernova', 80); // Most epic particles!
+      
+      // Mark for special refill
+      tile._hypernovaRefill = true;
+    }
+
+    addScorePopup(row, col, points, message, 1000); // 2x longer for special tiles
+    setScore(prev => prev + points);
+
+    if (tilesToRemove.length === 0) {
+      setIsAnimating(false);
+      return;
+    }
+
+    setMatchedTiles(tilesToRemove);
+    setTimeout(() => {
+      removeSpecialTiles(tilesToRemove);
+    }, 500);
+  };
+
+  const removeSpecialTiles = (tilesToRemove) => {
+    try {
+      const newGrid = grid.map(row => row.map(tile => ({ ...tile })));
+      
+      // Check for Supernova conversion data
+      const supernovaConvert = grid.flat().find(t => t?._supernovaConvert)?._supernovaConvert;
+      const hypernovaRefill = grid.flat().some(t => t?._hypernovaRefill);
+      
+      // Remove tiles
+      tilesToRemove.forEach(({ row, col }) => { newGrid[row][col] = null; });
+      
+      // Supernova Phase 3: Convert surrounding tiles to random specials
+      if (supernovaConvert && supernovaConvert.length > 0) {
+        const specialTypes = ['line', 'bomb', 'cross'];
+        supernovaConvert.forEach(({ row, col }) => {
+          if (newGrid[row] && newGrid[row][col]) {
+            const randomSpecial = specialTypes[Math.floor(Math.random() * specialTypes.length)];
+            newGrid[row][col] = {
+              ...newGrid[row][col],
+              special: randomSpecial,
+              isNew: false
+            };
+          }
+        });
+        
+        // Show message about conversion
+        setTimeout(() => {
+          addScorePopup(supernovaConvert[0].row, supernovaConvert[0].col, 0, '🔥 CHAIN REACTION!');
+        }, 500);
+      }
+      
+      setGrid(newGrid);
+      setMatchedTiles([]);
+      
+      // Hypernova: Special refill logic
+      if (hypernovaRefill) {
+        setTimeout(() => {
+          try {
+            hypernovaRefill_SPECIAL(newGrid);
+          } catch (error) {
+            console.error('Error in hypernova refill:', error);
+            setIsAnimating(false);
+          }
+        }, 300);
+      } else {
+        setTimeout(() => {
+          try {
+            applyGravity(newGrid);
+          } catch (error) {
+            console.error('Error in gravity:', error);
+            setIsAnimating(false);
+          }
+        }, 300);
+      }
+    } catch (error) {
+      console.error('Error removing special tiles:', error);
+      setIsAnimating(false);
+    }
+  };
+
+  const activateSpecialCombination = (row1, col1, row2, col2, type1, type2, currentGrid) => {
+    console.log('Activating special combination:', type1, '+', type2);
+    setIsAnimating(true);
+    
+    const tilesToRemove = [];
+    let points = 0;
+    let message = '';
+    
+    // Sort types for consistent comparison
+    const combo = [type1, type2].sort().join('+');
+    
+    if (combo === 'line+line') {
+      // Clear 3 rows (row + 1 above + 1 below)
+      for (let r = Math.max(0, row1 - 1); r <= Math.min(ROWS - 1, row1 + 1); r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 700;
+      message = '⚡⚡ TRIPLE LINE! +700';
+    } else if (combo === 'bomb+bomb') {
+      // Clear 5×5 area
+      for (let r = Math.max(0, row1 - 2); r <= Math.min(ROWS - 1, row1 + 2); r++) {
+        for (let c = Math.max(0, col1 - 2); c <= Math.min(COLS - 1, col1 + 2); c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 1000;
+      message = '💣💣 MEGA BLAST! +1000';
+    } else if (combo === 'cross+cross') {
+      // Clear 2 rows + 2 columns
+      for (let r = Math.max(0, row1 - 1); r <= Math.min(ROWS - 1, row1 + 1); r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = Math.max(0, col1 - 1); c <= Math.min(COLS - 1, col1 + 1); c++) {
+          if (currentGrid[r][c] && (c !== col1 || (r < row1 - 1 || r > row1 + 1))) {
+            tilesToRemove.push({ row: r, col: c });
+          }
+        }
+      }
+      points = 850;
+      message = '✨✨ DOUBLE CROSS! +850';
+    } else if (combo === 'bomb+line') {
+      // Clear entire row + 3×3 at bomb location
+      for (let c = 0; c < COLS; c++) {
+        if (currentGrid[row1][c]) tilesToRemove.push({ row: row1, col: c });
+      }
+      for (let r = Math.max(0, row1 - 1); r <= Math.min(ROWS - 1, row1 + 1); r++) {
+        for (let c = Math.max(0, col1 - 1); c <= Math.min(COLS - 1, col1 + 1); c++) {
+          if (currentGrid[r][c] && r !== row1) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 800;
+      message = '💣⚡ LINE BOMB! +800';
+    } else if (combo === 'cross+line') {
+      // Clear 2 rows + 1 column
+      for (let r = Math.max(0, row1 - 1); r <= Math.min(ROWS - 1, row1 + 1); r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      for (let r = 0; r < ROWS; r++) {
+        if (currentGrid[r][col1] && (r < row1 - 1 || r > row1 + 1)) {
+          tilesToRemove.push({ row: r, col: col1 });
+        }
+      }
+      points = 750;
+      message = '✨⚡ CROSS LINE! +750';
+    } else if (combo === 'bomb+cross') {
+      // Clear row + column + 3×3
+      for (let c = 0; c < COLS; c++) {
+        if (currentGrid[row1][c]) tilesToRemove.push({ row: row1, col: c });
+      }
+      for (let r = 0; r < ROWS; r++) {
+        if (currentGrid[r][col1] && r !== row1) tilesToRemove.push({ row: r, col: col1 });
+      }
+      for (let r = Math.max(0, row1 - 1); r <= Math.min(ROWS - 1, row1 + 1); r++) {
+        for (let c = Math.max(0, col1 - 1); c <= Math.min(COLS - 1, col1 + 1); c++) {
+          if (currentGrid[r][c] && !(r === row1 || c === col1)) {
+            tilesToRemove.push({ row: r, col: c });
+          }
+        }
+      }
+      points = 900;
+      message = '💣✨ CROSS BOMB! +900';
+    } else if (combo === 'supernova+supernova') {
+      // 🌌🌌 DUAL SUPERNOVA: Clear 10×10 area!
+      for (let r = Math.max(0, row1 - 5); r <= Math.min(ROWS - 1, row1 + 5); r++) {
+        for (let c = Math.max(0, col1 - 5); c <= Math.min(COLS - 1, col1 + 5); c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 5000;
+      message = '🌌🌌 DUAL SUPERNOVA! +5000';
+    } else if (combo === 'hypernova+hypernova') {
+      // 🌠🌠 DUAL HYPERNOVA: Instant victory-level points!
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 10000;
+      message = '🌠🌠 DUAL HYPERNOVA!!! +10000';
+    } else if (combo === 'hypernova+supernova') {
+      // 🌠🌌 NOVA FUSION: Clear board + massive bonus
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 8000;
+      message = '🌠🌌 NOVA FUSION! +8000';
+    } else if (combo === 'bomb+supernova' || combo === 'line+supernova' || combo === 'cross+supernova') {
+      // Supernova + basic: Clear 7×7
+      for (let r = Math.max(0, row1 - 3); r <= Math.min(ROWS - 1, row1 + 3); r++) {
+        for (let c = Math.max(0, col1 - 3); c <= Math.min(COLS - 1, col1 + 3); c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 3000;
+      const icon1 = type1 === 'supernova' ? '🌌' : (type1 === 'line' ? '⚡' : type1 === 'bomb' ? '💣' : '✨');
+      const icon2 = type2 === 'supernova' ? '🌌' : (type2 === 'line' ? '⚡' : type2 === 'bomb' ? '💣' : '✨');
+      message = `${icon1}${icon2} SUPERNOVA COMBO! +3000`;
+    } else if (combo === 'bomb+hypernova' || combo === 'line+hypernova' || combo === 'cross+hypernova') {
+      // Hypernova + basic: Clear entire board
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = 6000;
+      const icon1 = type1 === 'hypernova' ? '🌠' : (type1 === 'line' ? '⚡' : type1 === 'bomb' ? '💣' : '✨');
+      const icon2 = type2 === 'hypernova' ? '🌠' : (type2 === 'line' ? '⚡' : type2 === 'bomb' ? '💣' : '✨');
+      message = `${icon1}${icon2} HYPERNOVA COMBO! +6000`;
+    }
+    
+    // Remove duplicates
+    const uniqueTiles = [];
+    const seen = new Set();
+    tilesToRemove.forEach(tile => {
+      const key = `${tile.row}-${tile.col}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueTiles.push(tile);
+      }
+    });
+    
+    addScorePopup(row1, col1, points, message);
+    setScore(prev => prev + points);
+    setMatchedTiles(uniqueTiles);
+    
+    setTimeout(() => {
+      const newGrid = currentGrid.map(r => r.map(t => ({ ...t })));
+      uniqueTiles.forEach(({ row, col }) => { newGrid[row][col] = null; });
+      setGrid(newGrid);
+      setMatchedTiles([]);
+      setTimeout(() => applyGravity(newGrid), 600);
+    }, 500);
+  };
+
+  const attemptSwap = (row1, col1, row2, col2) => {
+    try {
+      // Debounce: Prevent rapid successive swaps
+      const now = Date.now();
+      const SWAP_COOLDOWN = 100; // 100ms cooldown between swaps
+      if (now - lastSwapTime < SWAP_COOLDOWN) {
+        console.log('Swap too rapid, ignoring');
+        return;
+      }
+      setLastSwapTime(now);
+      
+      setIsAnimating(true);
+      setSpecialsThisTurn(0); // Reset special counter for new turn
+      setSpecialBonusMultiplier(0); // Reset bonus multiplier
+      setLastCombo(0); // Clear previous combo display
+      
+      const newGrid = grid.map(row => row.map(tile => ({ ...tile })));
+      const temp = newGrid[row1][col1];
+      newGrid[row1][col1] = newGrid[row2][col2];
+      newGrid[row2][col2] = temp;
+      
+      // Check if either swapped tile is special
+      const tile1Special = temp?.special;
+      const tile2Special = newGrid[row1][col1]?.special;
+      
+      console.log('Swap:', tile1Special ? `Special at ${row1},${col1}` : '', tile2Special ? `Special at ${row2},${col2}` : '');
+    
+    // If BOTH tiles are special, activate special combination!
+    if (tile1Special && tile2Special) {
+      setGrid(newGrid);
+      setMoves(prev => prev - 1);
+      
+      console.log('SPECIAL COMBINATION:', tile1Special, '+', tile2Special);
+      setTimeout(() => {
+        activateSpecialCombination(row1, col1, row2, col2, tile1Special, tile2Special, newGrid);
+      }, 300);
+      return;
+    }
+    
+    // FIX: If only ONE tile is special, check if swap creates a match FIRST
+    if (tile1Special || tile2Special) {
+      const { matches, matchGroups, lShapeMatches } = findMatches(newGrid);
+      
+      if (matches.length > 0) {
+        // Valid match created - proceed normally, special will activate in processMatches
+        setGrid(newGrid);
+        setMoves(prev => prev - 1);
+        // FIX: Count initial combo properly (not 0)
+        const initialCombo = matchGroups.length + (lShapeMatches?.length || 0);
+        setCombo(initialCombo);
+        setMaxComboReached(prev => Math.max(prev, initialCombo));
+        setTimeout(() => {
+          processMatches(newGrid, matchGroups, lShapeMatches, initialCombo);
+        }, 400);
+      } else {
+        // No match - invalid swap, return to original state
+        setGrid(newGrid);
+        setTimeout(() => {
+          setGrid(grid);
+          setIsAnimating(false);
+        }, 400);
+      }
+      return;
+    }
+    
+    const { matches, matchGroups, lShapeMatches } = findMatches(newGrid);
+    
+    if (matches.length > 0) {
+      setGrid(newGrid);
+      setMoves(prev => prev - 1);
+      // NEW: Initial move counts toward combo based on number of match groups
+      const initialCombo = matchGroups.length + (lShapeMatches?.length || 0);
+      setCombo(initialCombo);
+      setMaxComboReached(prev => Math.max(prev, initialCombo)); // Track max
+      setTimeout(() => {
+        processMatches(newGrid, matchGroups, lShapeMatches, initialCombo);
+      }, 400);
+    } else {
+      setGrid(newGrid);
+      setTimeout(() => {
+        setGrid(grid);
+        setIsAnimating(false);
+      }, 400);
+    }
+    } catch (error) {
+      console.error('Error in attemptSwap:', error);
+      setIsAnimating(false);
+      setGrid(grid); // Restore original grid
+    }
+  };
+
+  const addScorePopup = (row, col, points, text = null, duration = 1000) => { // Default 1 second
+    setScorePopups(prev => {
+      // Count existing popups at this position for stacking
+      const stackIndex = prev.filter(p => p.row === row && p.col === col).length;
+      
+      return [...prev, {
+        id: Date.now() + Math.random(),
+        row,
+        col,
+        points,
+        text,
+        combo: combo,
+        duration,
+        stackIndex // For vertical stacking
+      }];
+    });
+  };
+
+  // Helper function to calculate current multiplier
+  const getMultiplier = (comboValue, bonusMultiplier = 0) => {
+    let baseMultiplier;
+    if (comboValue === 0) baseMultiplier = 1.0;
+    else if (comboValue === 1) baseMultiplier = 1.5;
+    else if (comboValue === 2) baseMultiplier = 2.0;
+    else if (comboValue === 3) baseMultiplier = 2.5;
+    else if (comboValue === 4) baseMultiplier = 3.0;
+    else if (comboValue === 5) baseMultiplier = 3.5;
+    else if (comboValue === 6) baseMultiplier = 4.0;
+    else baseMultiplier = 4.0 + ((comboValue - 6) * 0.2);
+    
+    // Add special bonus (from multiple specials triggered)
+    return baseMultiplier + bonusMultiplier;
+  };
+
+  // Calculate unused specials bonus at game end
+  const calculateUnusedSpecialsBonus = (currentGrid) => {
+    let bonus = 0;
+    const specials = { line: 0, bomb: 0, cross: 0, supernova: 0, hypernova: 0 };
+    
+    currentGrid.forEach(row => {
+      row.forEach(tile => {
+        if (tile?.special === 'line') {
+          specials.line++;
+          bonus += 150;
+        } else if (tile?.special === 'bomb') {
+          specials.bomb++;
+          bonus += 250;
+        } else if (tile?.special === 'cross') {
+          specials.cross++;
+          bonus += 200;
+        } else if (tile?.special === 'supernova') {
+          specials.supernova++;
+          bonus += 500; // 🌌 Rare, worth more
+        } else if (tile?.special === 'hypernova') {
+          specials.hypernova++;
+          bonus += 1000; // 🌠 Extremely rare, worth most
+        }
+      });
+    });
+    
+    return { bonus, specials };
+  };
+
+  const processMatches = (currentGrid, matchGroups, lShapeMatches, currentCombo, generation = 0) => {
+    if (matchGroups.length === 0 && lShapeMatches.length === 0) {
+      setIsAnimating(false);
+      setCombo(0);
+      checkForValidMoves(currentGrid);
+      return;
+    }
+    
+    const uniqueMatches = getUniqueMatches(matchGroups.flatMap(g => g.tiles));
+    
+    // Check if any matched tiles are special - if so, activate them!
+    const specialTilesInMatch = [];
+    uniqueMatches.forEach(match => {
+      const tile = currentGrid[match.row][match.col];
+      if (tile && tile.special) {
+        specialTilesInMatch.push({ row: match.row, col: match.col, type: tile.special });
+      }
+    });
+    
+    // If there are special tiles in the match, activate them - COMBINED to prevent conflicts
+    if (specialTilesInMatch.length > 0) {
+      console.log('Special tiles found in match:', specialTilesInMatch);
+      setMatchedTiles(uniqueMatches);
+      
+      // CRITICAL FIX: Combine all special effects into ONE operation instead of parallel forEach
+      setTimeout(() => {
+        try {
+          const allTilesToRemove = [];
+          let totalPoints = 0;
+          const messages = [];
+          
+          // Calculate all removals without executing
+          specialTilesInMatch.forEach(special => {
+            const tilesToRemove = [];
+            let points = 0;
+            
+            if (special.type === 'line') {
+              for (let c = 0; c < COLS; c++) {
+                if (currentGrid[special.row][c]) tilesToRemove.push({ row: special.row, col: c });
+              }
+              points = tilesToRemove.length * 30;
+              messages.push(`⚡ LINE CLEAR! +${points}`);
+            } else if (special.type === 'bomb') {
+              for (let r = Math.max(0, special.row - 1); r <= Math.min(ROWS - 1, special.row + 1); r++) {
+                for (let c = Math.max(0, special.col - 1); c <= Math.min(COLS - 1, special.col + 1); c++) {
+                  if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+                }
+              }
+              points = tilesToRemove.length * 45;
+              messages.push(`💣 BOOM! +${points}`);
+            } else if (special.type === 'cross') {
+              for (let c = 0; c < COLS; c++) {
+                if (currentGrid[special.row][c]) tilesToRemove.push({ row: special.row, col: c });
+              }
+              for (let r = 0; r < ROWS; r++) {
+                if (currentGrid[r][special.col] && r !== special.row) tilesToRemove.push({ row: r, col: special.col });
+              }
+              points = tilesToRemove.length * 38;
+              messages.push(`✨ CROSS BLAST! +${points}`);
+            }
+            
+            allTilesToRemove.push(...tilesToRemove);
+            totalPoints += points;
+          });
+          
+          // NEW v2.9: MEGA COLUMN CLEAR BONUS for 2+ specials!
+          if (specialTilesInMatch.length >= 2) {
+            console.log('MEGA COLUMN CLEAR: 2+ specials triggered!');
+            
+            const columns = new Set();
+            const adjacentColumns = new Set();
+            
+            // Get all special columns
+            specialTilesInMatch.forEach(special => {
+              columns.add(special.col);
+              // Add adjacent columns
+              if (special.col > 0) adjacentColumns.add(special.col - 1);
+              if (special.col < COLS - 1) adjacentColumns.add(special.col + 1);
+            });
+            
+            // Clear all these columns
+            const columnTiles = [];
+            [...columns, ...adjacentColumns].forEach(col => {
+              for (let row = 0; row < ROWS; row++) {
+                if (currentGrid[row][col] && !allTilesToRemove.some(t => t.row === row && t.col === col)) {
+                  columnTiles.push({ row, col });
+                }
+              }
+            });
+            
+            // Add to removal list
+            allTilesToRemove.push(...columnTiles);
+            
+            // Calculate bonus points
+            const bonusPoints = columnTiles.length * 50;
+            totalPoints += bonusPoints;
+            messages.push(`💥 MEGA COLUMN CLEAR! +${bonusPoints}`);
+          }
+          
+          // Remove duplicates
+          const uniqueTiles = [];
+          const seen = new Set();
+          allTilesToRemove.forEach(tile => {
+            const key = `${tile.row}-${tile.col}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              uniqueTiles.push(tile);
+            }
+          });
+          
+          // Show combined message
+          const combinedMessage = messages.join(' + ');
+          addScorePopup(specialTilesInMatch[0].row, specialTilesInMatch[0].col, totalPoints, combinedMessage);
+          setScore(prev => prev + totalPoints);
+          
+          // CHANGE #3: Track specials triggered and add bonus multiplier
+          const specialCount = specialTilesInMatch.length;
+          setSpecialsThisTurn(prev => prev + specialCount);
+          
+          // Calculate bonus: +0.5x per special (cap at +2.0x total per turn)
+          const newBonus = Math.min(specialCount * 0.5, 2.0);
+          setSpecialBonusMultiplier(prev => Math.min(prev + newBonus, 2.0));
+          
+          // Show bonus message if applicable
+          if (newBonus > 0) {
+            setTimeout(() => {
+              addScorePopup(
+                specialTilesInMatch[0].row, 
+                specialTilesInMatch[0].col, 
+                0, 
+                `🌟 SPECIAL CHAIN +${newBonus.toFixed(1)}x!`
+              );
+            }, 200);
+          }
+          
+          // FIX #3: Check for special chain reactions
+          // Before removing tiles, check if any tiles being cleared are also specials
+          const chainedSpecials = [];
+          uniqueTiles.forEach(tile => {
+            const tileData = currentGrid[tile.row][tile.col];
+            if (tileData && tileData.special && !specialTilesInMatch.some(s => s.row === tile.row && s.col === tile.col)) {
+              // This tile is a special being cleared by another special!
+              chainedSpecials.push({ row: tile.row, col: tile.col, type: tileData.special });
+            }
+          });
+          
+          // If there are chained specials, activate them!
+          if (chainedSpecials.length > 0) {
+            console.log(`CHAIN REACTION! ${chainedSpecials.length} specials triggered by other specials!`);
+            
+            // Calculate chain bonus points
+            const chainBonus = chainedSpecials.length * 200; // 200 pts per chained special
+            totalPoints += chainBonus;
+            
+            // Add tiles cleared by chained specials
+            chainedSpecials.forEach(special => {
+              const chainTiles = [];
+              if (special.type === 'line') {
+                for (let c = 0; c < COLS; c++) {
+                  if (currentGrid[special.row][c] && !uniqueTiles.some(t => t.row === special.row && t.col === c)) {
+                    chainTiles.push({ row: special.row, col: c });
+                  }
+                }
+                createParticles(special.row, special.col, 'line', 20); // Particles for chain
+              } else if (special.type === 'bomb') {
+                for (let r = Math.max(0, special.row - 1); r <= Math.min(ROWS - 1, special.row + 1); r++) {
+                  for (let c = Math.max(0, special.col - 1); c <= Math.min(COLS - 1, special.col + 1); c++) {
+                    if (currentGrid[r][c] && !uniqueTiles.some(t => t.row === r && t.col === c)) {
+                      chainTiles.push({ row: r, col: c });
+                    }
+                  }
+                }
+                createParticles(special.row, special.col, 'bomb', 25); // Particles for chain
+              } else if (special.type === 'cross') {
+                for (let c = 0; c < COLS; c++) {
+                  if (currentGrid[special.row][c] && !uniqueTiles.some(t => t.row === special.row && t.col === c)) {
+                    chainTiles.push({ row: special.row, col: c });
+                  }
+                }
+                for (let r = 0; r < ROWS; r++) {
+                  if (currentGrid[r][special.col] && r !== special.row && !uniqueTiles.some(t => t.row === r && t.col === special.col)) {
+                    chainTiles.push({ row: r, col: special.col });
+                  }
+                }
+                createParticles(special.row, special.col, 'cross', 20); // Fewer particles for chain to reduce lag
+              }
+              
+              // Add chain tiles to removal list (no duplicates)
+              chainTiles.forEach(tile => {
+                if (!uniqueTiles.some(t => t.row === tile.row && t.col === tile.col)) {
+                  uniqueTiles.push(tile);
+                }
+              });
+            });
+            
+            // Show chain bonus popup
+            setTimeout(() => {
+              addScorePopup(
+                specialTilesInMatch[0].row,
+                specialTilesInMatch[0].col,
+                chainBonus,
+                `⚡ CHAIN REACTION! +${chainBonus}`,
+                1000
+              );
+            }, 400);
+            
+            setScore(prev => prev + chainBonus);
+          }
+          
+          // Execute removal ONCE
+          const newGrid = currentGrid.map(r => r.map(t => ({ ...t })));
+          uniqueTiles.forEach(({ row, col }) => { newGrid[row][col] = null; });
+          setGrid(newGrid);
+          setMatchedTiles([]);
+          setTimeout(() => applyGravity(newGrid), 600);
+        } catch (error) {
+          console.error('Error activating special tiles in match:', error);
+          setIsAnimating(false);
+        }
+      }, 300);
+      return;
+    }
+    
+    setMatchedTiles(uniqueMatches);
+    
+    // Progressive combo multiplier: +0.5 up to x6, then +0.2 per combo
+    // PLUS special bonus from multiple specials triggered
+    let baseMultiplier;
+    if (currentCombo === 0) baseMultiplier = 1.0;
+    else if (currentCombo === 1) baseMultiplier = 1.5;
+    else if (currentCombo === 2) baseMultiplier = 2.0;
+    else if (currentCombo === 3) baseMultiplier = 2.5;
+    else if (currentCombo === 4) baseMultiplier = 3.0;
+    else if (currentCombo === 5) baseMultiplier = 3.5;
+    else if (currentCombo === 6) baseMultiplier = 4.0;
+    else baseMultiplier = 4.0 + ((currentCombo - 6) * 0.2);
+    
+    // Add special bonus multiplier (from Change #3)
+    const multiplier = baseMultiplier + specialBonusMultiplier;
+    
+    const basePoints = uniqueMatches.length * 15; // Was 10, now 15 (1.5x)
+    const bonusPoints = matchGroups.reduce((sum, group) => {
+      if (group.length > 3) return sum + (group.length - 3) * 30; // Was 20, now 30 (1.5x)
+      return sum;
+    }, 0);
+    
+    const totalPoints = Math.floor((basePoints + bonusPoints) * multiplier);
+    setScore(prev => prev + totalPoints);
+    
+    if (uniqueMatches.length > 0) {
+      addScorePopup(uniqueMatches[0].row, uniqueMatches[0].col, totalPoints);
+    }
+    
+    setTimeout(() => removeMatches(currentGrid, uniqueMatches, matchGroups, lShapeMatches, generation), 500);
+  };
+  
+  const activateSpecialTileInMatch = (row, col, specialType, currentGrid) => {
+    const tilesToRemove = [];
+    let points = 0;
+    let message = '';
+    
+    if (specialType === 'line') {
+      for (let c = 0; c < COLS; c++) {
+        if (currentGrid[row][c]) tilesToRemove.push({ row, col: c });
+      }
+      points = tilesToRemove.length * 30; // Was 20, now 30 (1.5x)
+      message = `⚡ LINE CLEAR! +${points}`;
+    } else if (specialType === 'bomb') {
+      for (let r = Math.max(0, row - 1); r <= Math.min(ROWS - 1, row + 1); r++) {
+        for (let c = Math.max(0, col - 1); c <= Math.min(COLS - 1, col + 1); c++) {
+          if (currentGrid[r][c]) tilesToRemove.push({ row: r, col: c });
+        }
+      }
+      points = tilesToRemove.length * 45; // Was 30, now 45 (1.5x)
+      message = `💣 BOOM! +${points}`;
+    } else if (specialType === 'cross') {
+      for (let c = 0; c < COLS; c++) {
+        if (currentGrid[row][c]) tilesToRemove.push({ row, col: c });
+      }
+      for (let r = 0; r < ROWS; r++) {
+        if (currentGrid[r][col] && r !== row) tilesToRemove.push({ row: r, col });
+      }
+      points = tilesToRemove.length * 38; // Was 25, now 38 (1.5x, rounded)
+      message = `✨ CROSS BLAST! +${points}`;
+    }
+    
+    addScorePopup(row, col, points, message, 1000); // 2x longer for special tiles
+    setScore(prev => prev + points);
+    
+    setTimeout(() => {
+      const newGrid = currentGrid.map(r => r.map(t => ({ ...t })));
+      tilesToRemove.forEach(({ row, col }) => { newGrid[row][col] = null; });
+      setGrid(newGrid);
+      setMatchedTiles([]);
+      setTimeout(() => applyGravity(newGrid), 600);
+    }, 300);
+  };
+
+  const removeMatches = (currentGrid, matches, matchGroups, lShapeMatches, generation = 0) => {
+    const newGrid = currentGrid.map(row => row.map(tile => ({ ...tile })));
+    const specialTilesToCreate = [];
+    
+    console.log(`Creating specials at generation ${generation}`);
+    
+    // Only create special tiles if generation < 3 (prevent infinite loops)
+    const canCreateSpecials = generation < 3;
+    
+    // Create special tiles for L-shapes (Cross Blast)
+    if (canCreateSpecials && lShapeMatches && lShapeMatches.length > 0) {
+      lShapeMatches.forEach(lshape => {
+        // Get color from the L-shape - now stored in tileType
+        const tileColor = lshape.tileType !== undefined ? lshape.tileType : currentGrid[lshape.row][lshape.col]?.type;
+        specialTilesToCreate.push({ 
+          row: lshape.row, 
+          col: lshape.col, 
+          type: 'cross', 
+          tileColor: tileColor,
+          generation: generation + 1 
+        });
+      });
+    }
+    
+    // Create special tiles for straight matches
+    matchGroups.forEach(group => {
+      const midIndex = Math.floor(group.length / 2);
+      const midTile = group.tiles[midIndex];
+      
+      // Don't create special tile if this position will be a cross tile
+      const willBeCross = specialTilesToCreate.some(st => st.row === midTile.row && st.col === midTile.col);
+      if (willBeCross) return;
+      
+      if (canCreateSpecials) {
+        // Get color from the matched tiles - must look in currentGrid, not group.tiles
+        // group.tiles contains {row, col} but not the type
+        let tileColor = null;
+        if (group.tiles && group.tiles[0]) {
+          const firstTile = group.tiles[0];
+          if (currentGrid[firstTile.row] && currentGrid[firstTile.row][firstTile.col]) {
+            tileColor = currentGrid[firstTile.row][firstTile.col].type;
+          }
+        }
+        // Fallback to midTile position
+        if (tileColor === null || tileColor === undefined) {
+          if (currentGrid[midTile.row] && currentGrid[midTile.row][midTile.col]) {
+            tileColor = currentGrid[midTile.row][midTile.col].type;
+          }
+        }
+        
+        console.log(`Creating special at (${midTile.row},${midTile.col}) with color ${tileColor} from ${group.length}-match`);
+        
+        if (group.length === 4) {
+          specialTilesToCreate.push({ row: midTile.row, col: midTile.col, type: 'line', tileColor: tileColor, generation: generation + 1 });
+        } else if (group.length === 5) {
+          specialTilesToCreate.push({ row: midTile.row, col: midTile.col, type: 'bomb', tileColor: tileColor, generation: generation + 1 });
+        } else if (group.length === 6) {
+          // NEW: 6-match creates Supernova
+          specialTilesToCreate.push({ row: midTile.row, col: midTile.col, type: 'supernova', tileColor: tileColor, generation: generation + 1 });
+        } else if (group.length >= 7) {
+          // NEW: 7+ match creates Hypernova
+          specialTilesToCreate.push({ row: midTile.row, col: midTile.col, type: 'hypernova', tileColor: tileColor, generation: generation + 1 });
+        }
+      } else {
+        console.log(`Generation ${generation}: Max reached, no special created`);
+      }
+    });
+    
+    matches.forEach(match => { newGrid[match.row][match.col] = null; });
+    
+    specialTilesToCreate.forEach(({ row, col, type, tileColor, generation: gen }) => {
+      // Use the tileColor from the matched tiles, not random
+      newGrid[row][col] = {
+        type: tileColor !== undefined ? tileColor : Math.floor(Math.random() * TILE_TYPES),
+        id: `special-${row}-${col}-${Date.now()}-${Math.random()}`,
+        special: type,
+        generation: gen || 0, // Track generation
+        isNew: false
+      };
+    });
+    
+    setGrid(newGrid);
+    setMatchedTiles([]);
+    setTimeout(() => applyGravity(newGrid), 600);
+  };
+
+  // Special function for Hypernova: Refill board with 50% special tiles and set combo x10
+  const hypernovaRefill_SPECIAL = (currentGrid) => {
+    try {
+      console.log('Hypernova refill: Creating special-rich board');
+      
+      const newGrid = [];
+      for (let row = 0; row < ROWS; row++) {
+        newGrid[row] = [];
+        for (let col = 0; col < COLS; col++) {
+          const isSpecial = Math.random() < 0.5; // 50% chance
+          if (isSpecial) {
+            const specialTypes = ['line', 'bomb', 'cross', 'supernova'];
+            const randomSpecial = specialTypes[Math.floor(Math.random() * specialTypes.length)];
+            newGrid[row][col] = {
+              type: Math.floor(Math.random() * TILE_TYPES),
+              id: `hypernova-${row}-${col}-${Date.now()}-${Math.random()}`,
+              special: randomSpecial,
+              isNew: true
+            };
+          } else {
+            newGrid[row][col] = {
+              type: Math.floor(Math.random() * TILE_TYPES),
+              id: `hypernova-${row}-${col}-${Date.now()}-${Math.random()}`,
+              special: null,
+              isNew: true
+            };
+          }
+        }
+      }
+      
+      setGrid(newGrid);
+      
+      // Set combo to x10!
+      setCombo(10);
+      setMaxComboReached(prev => Math.max(prev, 10));
+      
+      // Show epic message
+      addScorePopup(4, 4, 0, '⚡ COMBO x11! (HYPERNOVA BOOST)');
+      
+      // Check for matches in the new board
+      setTimeout(() => {
+        try {
+          const { matches, matchGroups, lShapeMatches } = findMatches(newGrid);
+          if (matches.length > 0) {
+            const comboIncrease = matchGroups.length + (lShapeMatches?.length || 0);
+            setCombo(prev => {
+              const newCombo = prev + comboIncrease;
+              setMaxComboReached(current => Math.max(current, newCombo));
+              return newCombo;
+            });
+            processMatches(newGrid, matchGroups, lShapeMatches, 10 + comboIncrease);
+          } else {
+            setIsAnimating(false);
+            setCombo(0);
+            checkForValidMoves(newGrid);
+          }
+        } catch (error) {
+          console.error('Error in hypernova cascade check:', error);
+          setIsAnimating(false);
+        }
+      }, 500);
+    } catch (error) {
+      console.error('Error in hypernovaRefill_SPECIAL:', error);
+      setIsAnimating(false);
+    }
+  };
+
+  const applyGravity = (currentGrid) => {
+    try {
+      const newGrid = currentGrid.map(row => row.map(tile => tile ? { ...tile } : null));
+      
+      for (let col = 0; col < COLS; col++) {
+        let emptyRow = ROWS - 1;
+        for (let row = ROWS - 1; row >= 0; row--) {
+          if (newGrid[row][col] !== null) {
+            if (row !== emptyRow) {
+              newGrid[emptyRow][col] = newGrid[row][col];
+              newGrid[row][col] = null;
+            }
+            emptyRow--;
+          }
+        }
+      }
+      
+      setGrid(newGrid);
+      setTimeout(() => fillEmptySpaces(newGrid), 700); // Increased from 400 to 500
+    } catch (error) {
+      console.error('Error in applyGravity:', error);
+      setIsAnimating(false);
+    }
+  };
+
+  const fillEmptySpaces = (currentGrid) => {
+    try {
+      // Calculate max generation from existing special tiles
+      let maxGeneration = 0;
+      currentGrid.forEach(row => {
+        row.forEach(tile => {
+          if (tile?.generation) {
+            maxGeneration = Math.max(maxGeneration, tile.generation);
+          }
+        });
+      });
+      
+      const newGrid = currentGrid.map(row => row.map(tile => tile ? { ...tile, isNew: false } : null));
+      
+      for (let col = 0; col < COLS; col++) {
+        for (let row = 0; row < ROWS; row++) {
+          if (newGrid[row][col] === null) {
+            newGrid[row][col] = {
+              type: Math.floor(Math.random() * TILE_TYPES),
+              id: `${row}-${col}-${Date.now()}-${Math.random()}`,
+              special: null,
+              isNew: true
+            };
+          }
+        }
+      }
+      
+      setGrid(newGrid);
+      
+      setTimeout(() => {
+        try {
+          const { matches, matchGroups, lShapeMatches } = findMatches(newGrid);
+          if (matches.length > 0) {
+            // FIX: Increment combo by NUMBER of match groups, not just 1
+            const comboIncrease = matchGroups.length + (lShapeMatches?.length || 0);
+            setCombo(prev => {
+              const newCombo = prev + comboIncrease;
+              setMaxComboReached(current => Math.max(current, newCombo)); // Track max
+              return newCombo;
+            });
+            processMatches(newGrid, matchGroups, lShapeMatches, combo + comboIncrease, maxGeneration);
+          } else {
+            setIsAnimating(false);
+            setLastCombo(combo); // Save final combo for display
+            setCombo(0);
+            checkForValidMoves(newGrid);
+          }
+        } catch (error) {
+          console.error('Error in fillEmptySpaces cascade check:', error);
+          setIsAnimating(false);
+        }
+      }, 700); // Increased from 400 to 700 for smoother animations
+    } catch (error) {
+      console.error('Error in fillEmptySpaces:', error);
+      setIsAnimating(false);
+    }
+  };
+
+  const checkForValidMoves = (currentGrid) => {
+    if (gameState !== 'playing') return;
+    setTimeout(() => {
+      if (!hasValidMoves(currentGrid)) {
+        setShowNoMoves(true);
+      }
+    }, 500);
+  };
+
+  const shuffleBoard = () => {
+    setShowNoMoves(false);
+    setIsAnimating(true);
+    
+    const tiles = [];
+    grid.forEach(row => {
+      row.forEach(tile => {
+        if (tile) tiles.push({ ...tile, isNew: false });
+      });
+    });
+    
+    for (let i = tiles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [tiles[i], tiles[j]] = [tiles[j], tiles[i]];
+    }
+    
+    const newGrid = [];
+    let tileIndex = 0;
+    for (let row = 0; row < ROWS; row++) {
+      newGrid[row] = [];
+      for (let col = 0; col < COLS; col++) {
+        if (tileIndex < tiles.length) {
+          newGrid[row][col] = { ...tiles[tileIndex], id: `${row}-${col}-${Date.now()}-${Math.random()}`, isNew: true };
+          tileIndex++;
+        }
+      }
+    }
+    
+    setGrid(newGrid);
+    setTimeout(() => setIsAnimating(false), 600);
+  };
+
+  useEffect(() => {
+    if (scorePopups.length > 0) {
+      const duration = scorePopups[0].duration || 1500; // Use popup's duration
+      const timer = setTimeout(() => setScorePopups(prev => prev.slice(1)), duration);
+      return () => clearTimeout(timer);
+    }
+  }, [scorePopups]);
+
+  // Failsafe: Reset animation lock if stuck for too long
+  useEffect(() => {
+    if (isAnimating) {
+      const failsafe = setTimeout(() => {
+        console.log('Failsafe: Unlocking animation after 2 seconds');
+        setIsAnimating(false);
+      }, 2000); // Reduced to 2000ms for even faster recovery when many specials trigger
+      return () => clearTimeout(failsafe);
+    }
+  }, [isAnimating]);
+
+  useEffect(() => {
+    if (moves <= 0 && gameState === 'playing' && !isAnimating && combo === 0 && scorePopups.length === 0) {
+      // FIX: Wait for ALL animations, combos, and popups before showing summary
+      setIsAnimating(true);
+      setShowingSummary(true);
+      
+      // Calculate final score (no move bonus on loss)
+      const { bonus: specialsBonus, specials } = calculateUnusedSpecialsBonus(grid);
+      
+      // Countdown sequence (8 seconds)
+      let countdown = 8;
+      setSummaryCountdown(countdown);
+      
+      const countdownInterval = setInterval(() => {
+        countdown--;
+        setSummaryCountdown(countdown);
+        
+        if (countdown <= 0) {
+          clearInterval(countdownInterval);
+          
+          // Apply specials bonus
+          setScore(prev => prev + specialsBonus);
+          
+          // Update high score if needed
+          if (score + specialsBonus > highScore) setHighScore(score + specialsBonus);
+          
+          // Reset difficulty on loss
+          setDifficultyBonus(0);
+          
+          // Show game over screen
+          setGameState('gameover');
+          setShowingSummary(false);
+        }
+      }, 1000);
+    }
+    if (score >= levelTarget && gameState === 'playing' && !isAnimating && combo === 0 && scorePopups.length === 0) {
+      // FIX: Wait for ALL animations, combos, and popups before showing summary
+      setIsAnimating(true);
+      setShowingSummary(true);
+      
+      // Calculate all bonuses
+      const moveBonus = moves * WIN_BONUS_PER_MOVE;
+      const { bonus: specialsBonus, specials } = calculateUnusedSpecialsBonus(grid);
+      const totalBonus = moveBonus + specialsBonus;
+      
+      // Countdown sequence (8 seconds)
+      let countdown = 8;
+      setSummaryCountdown(countdown);
+      
+      const countdownInterval = setInterval(() => {
+        countdown--;
+        setSummaryCountdown(countdown);
+        
+        if (countdown <= 0) {
+          clearInterval(countdownInterval);
+          
+          // Apply all bonuses
+          setScore(prev => prev + totalBonus);
+          
+          // Increase difficulty for next game
+          const difficultyIncrease = DIFFICULTY_INCREMENT_MIN + 
+            Math.floor(Math.random() * (DIFFICULTY_INCREMENT_MAX - DIFFICULTY_INCREMENT_MIN + 1));
+          setDifficultyBonus(prev => prev + difficultyIncrease);
+          
+          // Update high score
+          if (score + totalBonus > highScore) setHighScore(score + totalBonus);
+          
+          // Show victory screen
+          setGameState('won');
+          setShowingSummary(false);
+        }
+      }, 1000);
+    }
+  }, [moves, score, gameState, levelTarget, highScore, isAnimating]);
+
+  const restartGame = () => {
+    setGrid(initializeGrid());
+    setScore(0);
+    setMoves(MIN_MOVES + Math.floor(Math.random() * (MAX_MOVES - MIN_MOVES + 1)));
+    // Set new target with progressive difficulty and random variance
+    const rawTarget = BASE_TARGET + Math.floor(Math.random() * TARGET_VARIANCE) + difficultyBonus;
+    const newTarget = Math.round(rawTarget / 100) * 100; // Round to nearest 100
+    setLevelTarget(newTarget);
+    setGameState('playing');
+    setSelectedTile(null);
+    setIsAnimating(false);
+    setMatchedTiles([]);
+    setScorePopups([]);
+    setCombo(0);
+    setLastCombo(0); // Reset persistent combo display
+    setShowNoMoves(false);
+    // Reset v2.7 features
+    setMaxComboReached(0);
+    setSpecialsThisTurn(0);
+    setSpecialBonusMultiplier(0);
+    setShowingSummary(false);
+    setSummaryCountdown(8);
+  };
+
+  const isTileMatched = (row, col) => {
+    return matchedTiles.some(match => match.row === row && match.col === col);
+  };
+
+  const boardWidth = COLS * TILE_SIZE + (COLS - 1) * TILE_GAP + 20;
+
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      fontFamily: 'Arial, sans-serif',
+      padding: '20px',
+      paddingBottom: '60px',
+      touchAction: 'none',
+      userSelect: 'none'
+    }}>
+      {/* Summary Screen - Above header only */}
+      {showingSummary && (
+        <div style={{
+          marginBottom: '20px',
+          animation: 'fadeInScale 0.3s ease-out'
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            borderRadius: '15px',
+            padding: '20px 30px',
+            textAlign: 'center',
+            width: `${boardWidth}px`,
+            maxWidth: '90vw',
+            color: 'white',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.8)',
+            border: '2px solid rgba(255,255,255,0.3)'
+          }}>
+            <h2 style={{
+              fontSize: '28px',
+              margin: '0 0 15px 0',
+              textShadow: '2px 2px 4px rgba(0,0,0,0.3)'
+            }}>
+              {score >= levelTarget ? '🎉 VICTORY! 🎉' : '😔 DEFEAT 😔'}
+            </h2>
+            {score >= levelTarget ? (
+              <div style={{ fontSize: '14px', marginBottom: '10px', opacity: 0.9 }}>
+                Target Reached: {score} / {levelTarget} ✓
+              </div>
+            ) : (
+              <div style={{ fontSize: '14px', marginBottom: '10px', opacity: 0.9 }}>
+                Fell Short: {score} / {levelTarget} ({levelTarget - score} needed)
+              </div>
+            )}
+            
+            <div style={{ fontSize: '18px', marginBottom: '12px', lineHeight: '1.6' }}>
+              <div style={{ marginBottom: '6px' }}>
+                FINAL: <strong>{score}</strong>
+              </div>
+              {maxComboReached > 0 && (
+                <div style={{ marginBottom: '6px', fontSize: '16px' }}>
+                  🔥 Max Combo: <strong>x{maxComboReached + 1}</strong>
+                </div>
+              )}
+              {moves > 0 && (
+                <div style={{ marginBottom: '6px', fontSize: '16px' }}>
+                  ⭐ Move Bonus: <strong>+{moves * WIN_BONUS_PER_MOVE}</strong>
+                </div>
+              )}
+              {(() => {
+                const { bonus, specials } = calculateUnusedSpecialsBonus(grid);
+                const total = specials.line + specials.bomb + specials.cross + specials.supernova + specials.hypernova;
+                return total > 0 && (
+                  <div style={{ marginBottom: '6px', fontSize: '16px' }}>
+                    ✨ Specials: <strong>{total}</strong> (+{bonus})
+                  </div>
+                );
+              })()}
+            </div>
+            
+            <div style={{
+              fontSize: '40px',
+              fontWeight: 'bold',
+              marginTop: '15px',
+              animation: 'pulse 1s ease-in-out infinite'
+            }}>
+              {summaryCountdown}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header - Compact */}
+      <div style={{
+        background: 'rgba(255, 255, 255, 0.95)',
+        borderRadius: '15px',
+        padding: '12px 20px', // Reduced padding
+        marginBottom: '20px',
+        boxShadow: '0 8px 16px rgba(0,0,0,0.2)',
+        width: `${boardWidth}px`,
+        minHeight: '110px', // Fixed height to prevent re-plotting
+        textAlign: 'center',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between'
+      }}>
+        <h1 style={{ margin: '0', color: '#333', fontSize: '20px', textShadow: '2px 2px 4px rgba(0,0,0,0.1)' }}>
+          🎮 Match-3
+        </h1>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-around',
+          fontSize: '16px', // Slightly smaller
+          fontWeight: 'bold',
+          color: '#555'
+        }}>
+          <div>Score: <span style={{ color: '#667eea' }}>{score}</span></div>
+          <div>Moves: <span style={{ color: moves <= 5 ? '#FF4444' : moves <= 10 ? '#FF8C00' : '#44FF44' }}>{moves}</span></div>
+          <div>Target: <span style={{ color: '#FFD700' }}>{levelTarget}</span></div>
+        </div>
+        
+        {/* Combo alert - single line, reserved space */}
+        <div style={{ minHeight: '24px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          {(combo > 0 || lastCombo > 0) && (
+            <div style={{
+              fontSize: '16px', // Smaller
+              color: (combo > 0 ? combo : lastCombo) >= 4 ? '#FFD700' : '#FF8C00',
+              fontWeight: 'bold',
+              animation: (combo > 0 ? combo : lastCombo) >= 4 ? 'pulse 0.3s ease-in-out infinite' : 'none',
+              textShadow: (combo > 0 ? combo : lastCombo) >= 4 ? '1px 1px 3px rgba(0,0,0,0.4), 0 0 8px rgba(255,215,0,0.6)' : '1px 1px 2px rgba(0,0,0,0.2)',
+              opacity: combo > 0 ? 1 : 0.7
+            }}>
+              {(combo > 0 ? combo : lastCombo) >= 4 ? '🌟 MEGA COMBO' : '🔥 COMBO'} x{(combo > 0 ? combo : lastCombo) + 1} • Multiplier: {getMultiplier(combo > 0 ? combo : lastCombo, combo > 0 ? specialBonusMultiplier : 0).toFixed(1)}x
+              {combo > 0 && specialBonusMultiplier > 0 && ` (+${specialBonusMultiplier.toFixed(1)}x)`}
+            </div>
+          )}
+          {!(combo > 0 || lastCombo > 0) && highScore > 0 && (
+            <div style={{ fontSize: '13px', color: '#888' }}>
+              🏆 {highScore}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Game Board */}
+      <div style={{
+        background: 'rgba(255, 255, 255, 0.95)',
+        borderRadius: '15px',
+        padding: '15px',
+        boxShadow: '0 8px 16px rgba(0,0,0,0.2)',
+        position: 'relative'
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${COLS}, ${TILE_SIZE}px)`,
+          gap: `${TILE_GAP}px`,
+          background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+          padding: '10px',
+          borderRadius: '10px',
+          position: 'relative'
+        }}>
+          {grid.map((row, rowIndex) => 
+            row.map((tile, colIndex) => {
+              if (!tile) return (
+                <div key={`empty-${rowIndex}-${colIndex}`} style={{ width: `${TILE_SIZE}px`, height: `${TILE_SIZE}px` }} />
+              );
+              
+              const isSelected = selectedTile?.row === rowIndex && selectedTile?.col === colIndex;
+              const isMatched = isTileMatched(rowIndex, colIndex);
+              const config = TILE_CONFIG[tile.type];
+              const isSpecial = tile.special !== null;
+              
+              return (
+                <div
+                  key={tile.id}
+                  onClick={() => handleTileClick(rowIndex, colIndex)}
+                  onTouchStart={(e) => handleDragStart(e, rowIndex, colIndex)}
+                  onTouchMove={handleDragMove}
+                  onTouchEnd={handleDragEnd}
+                  onMouseDown={(e) => handleDragStart(e, rowIndex, colIndex)}
+                  onMouseMove={handleDragMove}
+                  onMouseUp={handleDragEnd}
+                  style={{
+                    width: `${TILE_SIZE}px`,
+                    height: `${TILE_SIZE}px`,
+                    background: config.name === 'star' 
+                      ? 'radial-gradient(circle at center, #FFEB3B 0%, #FFD700 35%, #CC6600 75%, #663300 100%)' // Dark Tips D!
+                      : `linear-gradient(135deg, ${config.color} 0%, ${config.color}dd 100%)`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '0px',
+                    color: 'white',
+                    cursor: isAnimating ? 'default' : 'pointer',
+                    userSelect: 'none',
+                    border: isSelected 
+                      ? '3px solid white' 
+                      : isSpecial 
+                      ? '3px solid gold' 
+                      : '2px solid rgba(0,0,0,0.1)',
+                    outline: 'none',
+                    outlineOffset: '0',
+                    boxShadow: isSelected 
+                      ? '0 0 20px rgba(255,255,255,0.9), inset 0 0 10px rgba(255,255,255,0.4)' 
+                      : isMatched
+                      ? '0 0 20px rgba(255,215,0,1), 0 0 30px rgba(255,215,0,0.7)'
+                      : isSpecial
+                      ? '0 0 15px rgba(255,215,0,0.9), 0 0 25px rgba(255,215,0,0.5)'
+                      : config.name === 'star'
+                      ? '0 0 0 2px #000000, 0 4px 8px rgba(0,0,0,0.5)' // Dark Tips D border
+                      : '0 3px 6px rgba(0,0,0,0.3)',
+                    transform: isSelected 
+                      ? 'scale(1.1)' 
+                      : isMatched 
+                      ? 'scale(1.15) rotate(5deg)' // Reduced rotation for subtlety
+                      : 'scale(1)',
+                    // Smooth and dramatic (0.5s) - now matches drop animation timing
+                    transition: isMatched
+                      ? 'all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)' // Bounce on match
+                      : 'all 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94)', // Smooth swap (was 0.4s)
+                    fontWeight: 'bold',
+                    opacity: isMatched ? 0.7 : 1,
+                    animation: tile.isNew 
+                      ? 'dropIn 0.5s cubic-bezier(0.34, 1.3, 0.64, 1)' // Subtle bounce on drop
+                      : isSpecial 
+                      ? 'sparkle 2s infinite' 
+                      : 'none',
+                    position: 'relative',
+                    touchAction: 'none',
+                    ...config.shapeStyle
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSelected && !isAnimating && gameState === 'playing') {
+                      e.currentTarget.style.transform = 'scale(1.1) translateY(-3px)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSelected && !isMatched) {
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }
+                  }}
+                >
+                  {tile.special && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      fontSize: '16px',
+                      textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
+                      filter: 'drop-shadow(0 0 4px rgba(255,215,0,0.9))',
+                      zIndex: 10
+                    }}>
+                      {tile.special === 'line' ? '⚡' : 
+                       tile.special === 'bomb' ? '💣' : 
+                       tile.special === 'cross' ? '✨' :
+                       tile.special === 'supernova' ? '🌌' :
+                       tile.special === 'hypernova' ? '🌠' : '✨'}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Score Popups - Improved with stacking */}
+        {scorePopups.map(popup => (
+          <div
+            key={popup.id}
+            style={{
+              position: 'absolute',
+              left: `${15 + popup.col * (TILE_SIZE + TILE_GAP)}px`,
+              top: `${15 + popup.row * (TILE_SIZE + TILE_GAP) - ((popup.stackIndex || 0) * 35)}px`, // Stack vertically
+              fontSize: popup.text ? '22px' : '24px', // Larger
+              fontWeight: 'bold',
+              color: popup.text ? '#FFD700' : popup.combo > 0 ? '#FF8C00' : '#FFD700',
+              textShadow: '3px 3px 8px rgba(0,0,0,1), 0 0 20px rgba(255,215,0,0.9)', // Stronger
+              pointerEvents: 'none',
+              animation: `scorePopup ${(popup.duration || 1000) / 1000}s ease-out forwards`, // Use actual duration
+              zIndex: 1000 + (popup.stackIndex || 0), // Higher stack = higher z-index
+              whiteSpace: 'nowrap',
+              background: popup.text ? 'rgba(0,0,0,0.85)' : 'transparent', // Darker
+              padding: popup.text ? '10px 16px' : '0', // More padding
+              borderRadius: popup.text ? '12px' : '0',
+              border: popup.text ? '3px solid #FFD700' : 'none', // Thicker
+              boxShadow: popup.text ? '0 0 20px rgba(255,215,0,0.6)' : 'none' // Glow
+            }}
+          >
+            {popup.text || `+${popup.points}`}
+            {!popup.text && popup.combo > 0 && ` x${popup.combo + 1}`}
+          </div>
+        ))}
+        
+        {/* Particle Effects */}
+        {particles.map(particle => (
+          <div
+            key={particle.id}
+            style={{
+              position: 'absolute',
+              left: `${15 + particle.x}px`,
+              top: `${15 + particle.y}px`,
+              width: `${particle.size}px`,
+              height: `${particle.size}px`,
+              borderRadius: '50%',
+              backgroundColor: particle.color.replace('1)', `${particle.life})`),
+              pointerEvents: 'none',
+              zIndex: 999,
+              boxShadow: `0 0 ${particle.size * 2}px ${particle.color}`
+            }}
+          />
+        ))}
+      </div>
+
+      {/* No Valid Moves Dialog */}
+      {showNoMoves && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 999,
+          animation: 'fadeIn 0.3s ease-out'
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '20px',
+            padding: '30px',
+            textAlign: 'center',
+            maxWidth: '350px',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+            animation: 'fadeInScale 0.3s ease-out'
+          }}>
+            <h3 style={{ fontSize: '24px', margin: '0 0 15px 0', color: '#FF8C00' }}>
+              😔 No Valid Moves!
+            </h3>
+            <p style={{ fontSize: '16px', color: '#555', marginBottom: '20px' }}>
+              The board has no possible matches. Shuffle to continue?
+            </p>
+            <button
+              onClick={shuffleBoard}
+              style={{
+                padding: '12px 30px',
+                fontSize: '18px',
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+                transition: 'transform 0.2s'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+            >
+              🔀 Shuffle Board
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Game Over / Won Screen */}
+      {(gameState === 'gameover' || gameState === 'won') && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          animation: 'fadeIn 0.3s ease-out'
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '20px',
+            padding: '40px',
+            textAlign: 'center',
+            maxWidth: '400px',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+            animation: 'fadeInScale 0.3s ease-out'
+          }}>
+            <h2 style={{
+              fontSize: '40px',
+              margin: '0 0 20px 0',
+              color: gameState === 'won' ? '#44FF44' : '#FF4444',
+              textShadow: '2px 2px 4px rgba(0,0,0,0.2)'
+            }}>
+              {gameState === 'won' ? '🎉 Victory!' : '😔 Game Over'}
+            </h2>
+            <p style={{ fontSize: '26px', margin: '15px 0', color: '#333', fontWeight: 'bold' }}>
+              Final Score: <span style={{ color: '#667eea' }}>{score}</span>
+            </p>
+            {score >= levelTarget && gameState === 'won' && (
+              <>
+                <p style={{ fontSize: '18px', color: '#44FF44', marginBottom: '10px' }}>
+                  ✨ Target Reached! Excellent work!
+                </p>
+                {moves > 0 && (
+                  <p style={{ fontSize: '16px', color: '#FFD700', marginBottom: '10px' }}>
+                    ⭐ Move Efficiency Bonus: +{moves * WIN_BONUS_PER_MOVE} pts ({moves} moves × {WIN_BONUS_PER_MOVE})
+                  </p>
+                )}
+                {difficultyBonus > 0 && (
+                  <p style={{ fontSize: '14px', color: '#FF8C00', marginBottom: '10px' }}>
+                    🔥 Next target increased by +{DIFFICULTY_INCREMENT_MIN}-{DIFFICULTY_INCREMENT_MAX} pts!
+                  </p>
+                )}
+              </>
+            )}
+            {score < levelTarget && gameState === 'gameover' && (
+              <p style={{ fontSize: '18px', color: '#888', marginBottom: '10px' }}>
+                Target was {levelTarget}. Keep trying!
+              </p>
+            )}
+            {highScore > 0 && score === highScore && (
+              <p style={{ fontSize: '16px', color: '#FFD700', marginBottom: '10px' }}>
+                🏆 New High Score!
+              </p>
+            )}
+            <button
+              onClick={restartGame}
+              style={{
+                marginTop: '20px',
+                padding: '15px 40px',
+                fontSize: '20px',
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+                transition: 'transform 0.2s'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+            >
+              🔄 Play Again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Instructions */}
+      <div style={{
+        marginTop: '30px',
+        marginBottom: '20px',
+        background: 'rgba(255, 255, 255, 0.9)',
+        padding: '15px 20px',
+        borderRadius: '10px',
+        maxWidth: `${boardWidth}px`,
+        fontSize: '13px',
+        color: '#555',
+        textAlign: 'center',
+        lineHeight: '1.6'
+      }}>
+        <strong>🎯 How to Play:</strong> Swap adjacent tiles to match 3+ in a row/column!<br/>
+        <strong>⚡ Line (4 match):</strong> 300pts | <strong>💣 Bomb (5+ match):</strong> 400pts | <strong>✨ Cross (L shape):</strong> 375pts<br/>
+        <strong>🌟 COMBOS:</strong> Chain matches for up to 4.5x multiplier! | <strong>⭐ WIN BONUS:</strong> 100pts per move left!<br/>
+        <strong>💥 SPECIAL COMBOS:</strong> Swap 2 special tiles for MEGA effects! (700-1000pts)
+      </div>
+
+      <style>{`
+        @keyframes dropIn {
+          0% {
+            transform: translateY(-120px) scale(0.3);
+            opacity: 0;
+          }
+          70% {
+            transform: translateY(8px) scale(1.15);
+            opacity: 1;
+          }
+          100% {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+          }
+        }
+        
+        @keyframes swapImpact {
+          0%, 100% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.08);
+          }
+        }
+
+        @keyframes scorePopup {
+          0% {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+          }
+          100% {
+            transform: translateY(-70px) scale(1.4);
+            opacity: 0;
+          }
+        }
+
+        @keyframes fadeInScale {
+          0% {
+            transform: scale(0.7);
+            opacity: 0;
+          }
+          100% {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+
+        @keyframes fadeIn {
+          0% {
+            opacity: 0;
+          }
+          100% {
+            opacity: 1;
+          }
+        }
+
+        @keyframes pulse {
+          0%, 100% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.15);
+          }
+        }
+
+        @keyframes sparkle {
+          0%, 100% {
+            filter: brightness(1) drop-shadow(0 0 5px rgba(255,215,0,0.5));
+          }
+          50% {
+            filter: brightness(1.4) drop-shadow(0 0 10px rgba(255,215,0,0.9));
+          }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+
+        // Render the game
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<Match3Game />);
+    </script>
+</body>
+</html>

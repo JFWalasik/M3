@@ -1,7 +1,9 @@
 # M3
 Project with Claude to learn about context windows, tokens, and session limits.
 
-Also coding logic and AI negotiations.
+Also coding logic and AI negotiations. And differences between browser optimations for desktop and mobile.
+
+Update  https://jfwalasik.github.io/M3/match3-v9_6-tablet.html
 
 Okay version:  https://jfwalasik.github.io/M3/match3-v9_5.html
 

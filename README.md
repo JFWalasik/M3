@@ -5,13 +5,17 @@ Also coding logic and AI negotiations. And differences between browser optimatio
 
 Phone version:    https://jfwalasik.github.io/M3/match3-v9_10-phone.html
 
-Bug fixes:    https://jfwalasik.github.io/M3/match3-v9_8-tablet.html
+Tablet + Bug fixes:    https://jfwalasik.github.io/M3/match3-v9_8-tablet.html
+
+Okay version desktop:  https://jfwalasik.github.io/M3/match3-v9_5.html
+
+==============================
+
+Old and testing versions:
 
 Update-test for fix to animation sturttering:   https://jfwalasik.github.io/M3/match3-v9_7_1-tablet.html 
 
 Update: https://jfwalasik.github.io/M3/match3-v9_6-tablet.html
-
-Okay version:  https://jfwalasik.github.io/M3/match3-v9_5.html
 
 Not so buggy version: https://jfwalasik.github.io/M3/match3-v8_13.html
 

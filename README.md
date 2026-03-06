@@ -3,7 +3,7 @@ Project with Claude to learn about context windows, tokens, and session limits.
 
 Also coding logic and AI negotiations. And differences between browser optimations for desktop and mobile.
 
-Tablet update:    https://jfwalasik.github.io/M3/match3-v10.1-tablet.html
+Tablet update:    https://jfwalasik.github.io/M3/match3-v10.4-tablet.html
 
 Phone - 418px (big) version:     https://jfwalasik.github.io/M3/match3-v9_12-418px-phone.html
 
